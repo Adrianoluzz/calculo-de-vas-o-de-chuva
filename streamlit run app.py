@@ -3,13 +3,29 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(
-    page_title="Dimensionamento Completo de Drenagem Pluvial",
+    page_title="Dimensionamento de Drenagem Pluvial",
     page_icon="🌧️",
     layout="wide"
 )
 
-st.title("🌧️ Dimensionamento: Sarjeta, Bocas de Lobo e Manilha")
+st.title("🌧️ Dimensionamento Integrado: Sarjeta, Bocas de Lobo e Manilhas")
 st.markdown("---")
+
+# --- BANCO DE DADOS DE MATERIAIS DE MANILHA (COM DIÂMETROS CUSTOMIZADOS) ---
+MATERIAIS_MANILHA = {
+    "Manilha Padrão do Projeto (300mm a 1000mm)": {
+        "n": 0.013,
+        "diametros_mm": [300, 500, 600, 800, 1000]
+    },
+    "Concreto Armado (Linha Completa)": {
+        "n": 0.013,
+        "diametros_mm": [300, 400, 500, 600, 800, 1000, 1200, 1500]
+    },
+    "PVC / PEAD Corrugado": {
+        "n": 0.010,
+        "diametros_mm": [300, 500, 600, 800, 1000]
+    }
+}
 
 # --- BARRA LATERAL: PARÂMETROS DE ENTRADA ---
 st.sidebar.header("⚙️ 1. Geometria da Rua e Chuva")
@@ -36,7 +52,8 @@ coef_c = st.sidebar.slider(
     min_value=0.10, 
     max_value=0.95, 
     value=0.85, 
-    step=0.05
+    step=0.05,
+    help="Asfalto/Concreto: 0.85"
 )
 
 intensidade_mm_h = st.sidebar.number_input(
@@ -72,14 +89,48 @@ n_sarjeta = st.sidebar.number_input(
     step=0.001
 )
 
-st.sidebar.header("🕳️ 3. Boca de Lobo")
-
 capacidade_boca_lobo_ls = st.sidebar.number_input(
-    "Capacidade Média da Boca de Lobo (L/s):", 
+    "Capacidade Média por Boca de Lobo (L/s):", 
     min_value=5.0, 
     value=25.0, 
-    step=5.0,
-    help="Uma boca de lobo de grelha padrão capta tipicamente de 20 a 30 L/s."
+    step=5.0
+)
+
+st.sidebar.header("🚰 3. Especificação das Manilhas")
+
+material_selecionado = st.sidebar.selectbox(
+    "Opção de Manilhas:",
+    options=list(MATERIAIS_MANILHA.keys()),
+    index=0
+)
+
+# Permitir ao usuário personalizar os diâmetros diretamente na interface se quiser
+usar_custom = st.sidebar.checkbox("Personalizar diâmetros manualmente", value=False)
+
+if usar_custom:
+    diametros_comerciais_mm = st.sidebar.multiselect(
+        "Selecione os Diâmetros Permitidos (mm):",
+        options=[200, 300, 400, 500, 600, 700, 800, 900, 1000, 1200, 1500],
+        default=[300, 500, 600, 800, 1000]
+    )
+    diametros_comerciais_mm.sort()
+else:
+    diametros_comerciais_mm = MATERIAIS_MANILHA[material_selecionado]["diametros_mm"]
+
+folga_seguranca = st.sidebar.slider(
+    "Limite do Nível de Enchimento do Tubo (%):",
+    min_value=50,
+    max_value=100,
+    value=85,
+    step=5,
+    help="Determina o percentual máximo da área da manilha que pode ser ocupado pela água."
+)
+
+n_manilha = MATERIAIS_MANILHA[material_selecionado]["n"]
+
+st.sidebar.info(
+    f"ℹ️ **Rugosidade Utilizada:** Manning n = **{n_manilha}**\n\n"
+    f"**Diâmetros Avaliados:** {', '.join([f'DN{d}' for d in diametros_comerciais_mm])} mm"
 )
 
 # --- CÁLCULOS HIDROLÓGICOS GERAIS ---
@@ -96,69 +147,70 @@ c4.metric("Vazão em m³/s", f"{vazao_m3_s:.4f} m³/s")
 
 st.markdown("---")
 
-# --- SEÇÃO DE ANÁLISE COMPLETA ---
-st.subheader("📊 Tabela de Dimensionamento Integrado por Inclinação")
+# --- SEÇÃO DE ANÁLISE INTEGRADA ---
+st.subheader("📊 Tabela de Dimensionamento (Foco nas Manilhas de 300mm a 1000mm)")
 
 inclinacoes_pct = [0.5, 1.0, 2.0, 3.0, 5.0, 8.0, 10.0]
-diametros_comerciais = [0.30, 0.40, 0.50, 0.60, 0.80, 1.00, 1.20]
-n_manilha = 0.013
 
-# Conversões da Sarjeta (Izard)
+# Conversões da Sarjeta (Fórmula de Izard)
 y_m = altura_guia_cm / 100.0
 Z = 1.0 / (decliv_transversal_pct / 100.0)
-largura_espelho_agua = y_m * Z
 
 dados_tabela = []
+fator_folga = folga_seguranca / 100.0
 
 for inc in inclinacoes_pct:
     S = inc / 100.0  # Declividade em m/m
     
-    # 1. CAPACIDADE MÁXIMA DA SARJETA (Fórmula de Izard em L/s)
+    # 1. CAPACIDADE DA SARJETA (L/s)
     Q_sarjeta_ls = (375.0 / n_sarjeta) * Z * (y_m**(8.0/3.0)) * np.sqrt(S)
     
-    # 2. CÁLCULO DE BOCAS DE LOBO E ESPAÇAMENTO
-    # Se a vazão total da rua for maior que a capacidade da sarjeta:
+    # 2. ESPAÇAMENTO E BOCAS DE LOBO
     if vazao_litros_segundo > Q_sarjeta_ls:
-        # Distância na qual a água atinge o topo da sarjeta
         vazao_por_metro = vazao_litros_segundo / comprimento_rua_m
         espacamento_m = Q_sarjeta_ls / vazao_por_metro if vazao_por_metro > 0 else comprimento_rua_m
-        
-        # Quantidade necessária de bocas de lobo
         qtd_bocas = int(np.ceil(vazao_litros_segundo / capacidade_boca_lobo_ls))
     else:
         espacamento_m = comprimento_rua_m
-        qtd_bocas = 1  # Apenas 1 no ponto mais baixo ao final da rua
+        qtd_bocas = 1
 
-    # 3. MANILHA IDEAL (Manning a 85% da capacidade)
-    dn_recomendado = "DN > 1200mm"
+    # 3. SELEÇÃO DA MANILHA DENTRE AS OPÇÕES DA LISTA
+    dn_recomendado = f"DN > {max(diametros_comerciais_mm) if diametros_comerciais_mm else 0} mm (Requer Galeria/Aumento)"
     v_escoamento = 0.0
+    ocupacao_pct = 0.0
     
-    for D in diametros_comerciais:
+    for d_mm in diametros_comerciais_mm:
+        D = d_mm / 1000.0  # Converte mm para m
         A_tubo = (np.pi * (D**2)) / 4.0
         Rh_tubo = D / 4.0
+        
+        # Fórmula de Manning (Vazão máxima com tubo cheio)
         Q_cap_max = (1.0 / n_manilha) * A_tubo * (Rh_tubo**(2/3)) * np.sqrt(S)
         
-        if (Q_cap_max * 0.85) >= vazao_m3_s:
-            dn_recomendado = f"DN {int(D*1000)} mm"
+        # Aplica o limite de segurança
+        if (Q_cap_max * fator_folga) >= vazao_m3_s:
+            dn_recomendado = f"DN {d_mm} mm"
             v_escoamento = vazao_m3_s / A_tubo
+            ocupacao_pct = (vazao_m3_s / Q_cap_max) * 100.0
             break
 
     dados_tabela.append({
         "Inclinação (%)": f"{inc:.1f}%",
         "Capac. Sarjeta (L/s)": f"{Q_sarjeta_ls:.1f}",
-        "Espaçamento Máx. Entre Bocas (m)": f"{min(espacamento_m, comprimento_rua_m):.1f} m",
-        "Qtd. Mínima de Bocas de Lobo": f"{qtd_bocas} un",
-        "Veloc. Manilha (m/s)": f"{v_escoamento:.2f}" if v_escoamento > 0 else "N/A",
-        "Manilha Mínima": dn_recomendado
+        "Espaçamento Bocas (m)": f"{min(espacamento_m, comprimento_rua_m):.1f} m",
+        "Qtd. Bocas": f"{qtd_bocas} un",
+        "Manilha Mínima": dn_recomendado,
+        "Ocupação do Tubo (%)": f"{ocupacao_pct:.1f}%" if ocupacao_pct > 0 else "N/A",
+        "Veloc. Tubo (m/s)": f"{v_escoamento:.2f}" if v_escoamento > 0 else "N/A"
     })
 
 df_resultado = pd.DataFrame(dados_tabela)
 st.dataframe(df_resultado, use_container_width=True)
 
 # --- RECOMENDAÇÕES PRÁTICAS ---
-with st.expander("📌 Como aplicar os resultados no projeto executivo"):
-    st.markdown(f"""
-    * **Espaçamento das Bocas de Lobo:** Indica a distância máxima que a água pode percorrer na sarjeta antes de estourar a altura limite do meio-fio ({altura_guia_cm} cm).
-    * **Bocas de Lobo Intermediárias:** Se a quantidade de bocas for maior que 1, instale as engolidoras ao longo dos **{comprimento_rua_m:.0f} metros** respeitando o espaçamento indicado.
-    * **Ponto Mais Baixo:** Garanta sempre a instalação de pelo menos um par de bocas de lobo no ponto mais baixo (*ponto de selha*) da via para evitar empoçamento terminal.
+with st.expander("📌 Regras de Seleção das Manilhas"):
+    st.markdown("""
+    * **Lista de Diâmetros Padrão:** As bitolas testadas são **300 mm, 500 mm, 600 mm, 800 mm e 1000 mm**.
+    * **Ocupação (%)**: Mostra a porcentagem de água dentro do tubo. O ideal é que fique **abaixo do limite selecionado** (padrão de 85%) para deixar espaço de ar livre dentro do tubo.
+    * **Personalização:** Ative a caixa *"Personalizar diâmetros manualmente"* na barra lateral caso queira incluir ou remover algum tamanho específico de tubo da lista de verificação.
     """)
