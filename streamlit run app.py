@@ -8,24 +8,8 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🌧️ Dimensionamento Integrado: Sarjeta, Bocas de Lobo e Manilhas")
+st.title("🌧️ Calculadora de Drenagem: Sarjeta, Bocas de Lobo e Manilhas")
 st.markdown("---")
-
-# --- BANCO DE DADOS DE MATERIAIS DE MANILHA (COM DIÂMETROS CUSTOMIZADOS) ---
-MATERIAIS_MANILHA = {
-    "Manilha Padrão do Projeto (300mm a 1000mm)": {
-        "n": 0.013,
-        "diametros_mm": [300, 500, 600, 800, 1000]
-    },
-    "Concreto Armado (Linha Completa)": {
-        "n": 0.013,
-        "diametros_mm": [300, 400, 500, 600, 800, 1000, 1200, 1500]
-    },
-    "PVC / PEAD Corrugado": {
-        "n": 0.010,
-        "diametros_mm": [300, 500, 600, 800, 1000]
-    }
-}
 
 # --- BARRA LATERAL: PARÂMETROS DE ENTRADA ---
 st.sidebar.header("⚙️ 1. Geometria da Rua e Chuva")
@@ -96,41 +80,34 @@ capacidade_boca_lobo_ls = st.sidebar.number_input(
     step=5.0
 )
 
-st.sidebar.header("🚰 3. Especificação das Manilhas")
+# --- CAIXA DE SELEÇÃO FIXA DE MANILHA ---
+st.sidebar.header("🚰 3. Escolha da Manilha")
 
-material_selecionado = st.sidebar.selectbox(
-    "Opção de Manilhas:",
-    options=list(MATERIAIS_MANILHA.keys()),
+opcoes_manilha_mm = [300, 500, 600, 800, 1000]
+
+dn_selecionado_mm = st.sidebar.selectbox(
+    "Selecione o Diâmetro Nominal da Manilha:",
+    options=opcoes_manilha_mm,
+    index=0,  # Padrão: 300 mm
+    format_func=lambda x: f"DN {x} mm"
+)
+
+material_tubo = st.sidebar.selectbox(
+    "Material do Tubo:",
+    options=["Concreto (n = 0.013)", "PVC / PEAD (n = 0.010)"],
     index=0
 )
 
-# Permitir ao usuário personalizar os diâmetros diretamente na interface se quiser
-usar_custom = st.sidebar.checkbox("Personalizar diâmetros manualmente", value=False)
+# Define o coeficiente de Manning do tubo escolhido
+n_manilha = 0.013 if "Concreto" in material_tubo else 0.010
 
-if usar_custom:
-    diametros_comerciais_mm = st.sidebar.multiselect(
-        "Selecione os Diâmetros Permitidos (mm):",
-        options=[200, 300, 400, 500, 600, 700, 800, 900, 1000, 1200, 1500],
-        default=[300, 500, 600, 800, 1000]
-    )
-    diametros_comerciais_mm.sort()
-else:
-    diametros_comerciais_mm = MATERIAIS_MANILHA[material_selecionado]["diametros_mm"]
-
-folga_seguranca = st.sidebar.slider(
-    "Limite do Nível de Enchimento do Tubo (%):",
+limite_folga_pct = st.sidebar.slider(
+    "Alerta de Enchimento do Tubo (%):",
     min_value=50,
     max_value=100,
     value=85,
     step=5,
-    help="Determina o percentual máximo da área da manilha que pode ser ocupado pela água."
-)
-
-n_manilha = MATERIAIS_MANILHA[material_selecionado]["n"]
-
-st.sidebar.info(
-    f"ℹ️ **Rugosidade Utilizada:** Manning n = **{n_manilha}**\n\n"
-    f"**Diâmetros Avaliados:** {', '.join([f'DN{d}' for d in diametros_comerciais_mm])} mm"
+    help="Define a porcentagem máxima tolerada de ocupação do tubo antes de emitir alerta."
 )
 
 # --- CÁLCULOS HIDROLÓGICOS GERAIS ---
@@ -143,21 +120,25 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("Comprimento da Via", f"{comprimento_rua_m:.0f} m")
 c2.metric("Volume Gerado", f"{volume_litros_hora:,.0f} L/h".replace(",", "."))
 c3.metric("Vazão Total da Rua", f"{vazao_litros_segundo:.2f} L/s")
-c4.metric("Vazão em m³/s", f"{vazao_m3_s:.4f} m³/s")
+c4.metric("Manilha Selecionada", f"DN {dn_selecionado_mm} mm")
 
 st.markdown("---")
 
-# --- SEÇÃO DE ANÁLISE INTEGRADA ---
-st.subheader("📊 Tabela de Dimensionamento (Foco nas Manilhas de 300mm a 1000mm)")
+# --- SEÇÃO DE ANÁLISE PARA A MANILHA ESCOLHIDA ---
+st.subheader(f"📊 Avaliação do Desempenho para Manilha de DN {dn_selecionado_mm} mm")
 
 inclinacoes_pct = [0.5, 1.0, 2.0, 3.0, 5.0, 8.0, 10.0]
 
-# Conversões da Sarjeta (Fórmula de Izard)
+# Variáveis Geométricas da Sarjeta (Izard)
 y_m = altura_guia_cm / 100.0
 Z = 1.0 / (decliv_transversal_pct / 100.0)
 
+# Propriedades do Tubo Selecionado
+D_m = dn_selecionado_mm / 1000.0  # Converte mm para m
+A_tubo = (np.pi * (D_m**2)) / 4.0
+Rh_tubo = D_m / 4.0
+
 dados_tabela = []
-fator_folga = folga_seguranca / 100.0
 
 for inc in inclinacoes_pct:
     S = inc / 100.0  # Declividade em m/m
@@ -174,43 +155,42 @@ for inc in inclinacoes_pct:
         espacamento_m = comprimento_rua_m
         qtd_bocas = 1
 
-    # 3. SELEÇÃO DA MANILHA DENTRE AS OPÇÕES DA LISTA
-    dn_recomendado = f"DN > {max(diametros_comerciais_mm) if diametros_comerciais_mm else 0} mm (Requer Galeria/Aumento)"
-    v_escoamento = 0.0
-    ocupacao_pct = 0.0
+    # 3. CÁLCULO DA MANILHA ESCOLHIDA (Manning)
+    # Vazão máxima teórica da manilha a seção cheia
+    Q_cap_max_m3s = (1.0 / n_manilha) * A_tubo * (Rh_tubo**(2/3)) * np.sqrt(S)
+    Q_cap_max_lh = Q_cap_max_m3s * 1000.0 * 3600.0
     
-    for d_mm in diametros_comerciais_mm:
-        D = d_mm / 1000.0  # Converte mm para m
-        A_tubo = (np.pi * (D**2)) / 4.0
-        Rh_tubo = D / 4.0
-        
-        # Fórmula de Manning (Vazão máxima com tubo cheio)
-        Q_cap_max = (1.0 / n_manilha) * A_tubo * (Rh_tubo**(2/3)) * np.sqrt(S)
-        
-        # Aplica o limite de segurança
-        if (Q_cap_max * fator_folga) >= vazao_m3_s:
-            dn_recomendado = f"DN {d_mm} mm"
-            v_escoamento = vazao_m3_s / A_tubo
-            ocupacao_pct = (vazao_m3_s / Q_cap_max) * 100.0
-            break
+    # Percentual de Ocupação da Manilha com a água da chuva
+    ocupacao_pct = (vazao_m3_s / Q_cap_max_m3s) * 100.0
+    v_escoamento = vazao_m3_s / A_tubo
+    
+    # Status da manilha
+    if ocupacao_pct <= limite_folga_pct:
+        status_manilha = f"✅ Atende ({ocupacao_pct:.1f}% cheio)"
+    elif ocupacao_pct <= 100.0:
+        status_manilha = f"⚠️ Atenção ({ocupacao_pct:.1f}% cheio)"
+    else:
+        status_manilha = f"❌ Sobrecarga ({ocupacao_pct:.1f}% - Sobrecarregado)"
 
     dados_tabela.append({
         "Inclinação (%)": f"{inc:.1f}%",
         "Capac. Sarjeta (L/s)": f"{Q_sarjeta_ls:.1f}",
         "Espaçamento Bocas (m)": f"{min(espacamento_m, comprimento_rua_m):.1f} m",
         "Qtd. Bocas": f"{qtd_bocas} un",
-        "Manilha Mínima": dn_recomendado,
-        "Ocupação do Tubo (%)": f"{ocupacao_pct:.1f}%" if ocupacao_pct > 0 else "N/A",
-        "Veloc. Tubo (m/s)": f"{v_escoamento:.2f}" if v_escoamento > 0 else "N/A"
+        f"Capacidade Máx. DN{dn_selecionado_mm} (L/h)": f"{Q_cap_max_lh:,.0f}".replace(",", "."),
+        "Ocupação do Tubo (%)": f"{ocupacao_pct:.1f}%",
+        "Velocidade (m/s)": f"{v_escoamento:.2f}",
+        "Avaliação do Tubo": status_manilha
     })
 
 df_resultado = pd.DataFrame(dados_tabela)
 st.dataframe(df_resultado, use_container_width=True)
 
 # --- RECOMENDAÇÕES PRÁTICAS ---
-with st.expander("📌 Regras de Seleção das Manilhas"):
-    st.markdown("""
-    * **Lista de Diâmetros Padrão:** As bitolas testadas são **300 mm, 500 mm, 600 mm, 800 mm e 1000 mm**.
-    * **Ocupação (%)**: Mostra a porcentagem de água dentro do tubo. O ideal é que fique **abaixo do limite selecionado** (padrão de 85%) para deixar espaço de ar livre dentro do tubo.
-    * **Personalização:** Ative a caixa *"Personalizar diâmetros manualmente"* na barra lateral caso queira incluir ou remover algum tamanho específico de tubo da lista de verificação.
+with st.expander("📌 Orientações de Leitura do Resultado"):
+    st.markdown(f"""
+    * **Manilha Testada:** **DN {dn_selecionado_mm} mm** em material **{material_tubo}**.
+    * **Status ✅ Atende:** O volume de água preenche menos do que **{limite_folga_pct}%** do diâmetro do tubo, estando seguro contra refluxos.
+    * **Status ⚠️ Atenção:** O tubo comporta a água, porém trabalha muito cheio (acima de {limite_folga_pct}% da seção).
+    * **Status ❌ Sobrecarga:** A vazão gerada pela chuva é superior à capacidade física do diâmetro **DN {dn_selecionado_mm} mm** para aquela declividade. Escolha um diâmetro maior na caixa lateral.
     """)
